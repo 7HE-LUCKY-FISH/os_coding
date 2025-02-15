@@ -12,11 +12,11 @@ int main(int argc, char *argv[]) {
     int maxNumber = 0;           // The maximum number in the pool.
     int maxPowerBall = 0;        // Maximum powerball number (optional).
     int numberSets = 0;          // How many sets (lines) to generate.
-    int i;
+    int i;                      // Loop counter.
 
 
     //if there is no N input still generate 1 set
-
+    // Parse command line arguments. And return 1 if there is an error.
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-n") == 0) {
             if (i + 1 < argc)
