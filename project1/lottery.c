@@ -59,7 +59,7 @@ int main(int argc, char *argv[]) {
 
     // Validate required parameters. So there is no numbers below 0 such as -2 max number 
     if (numbersToGenerate <= 0 || maxNumber <= 0 || numberSets <= 0) {
-        fprintf(stderr, "Error: Missing or invalid required parameters.\n");
+        fprintf(stderr, "Error: Missing or invalid required parameters such as negative values.\n");
         print_usage(argv[0]);
         return 1;
     }
@@ -98,7 +98,7 @@ int main(int argc, char *argv[]) {
         for (i = 0; i < numbersToGenerate; i++) {
             printf("%d", pool[i]);
             if(i != numbersToGenerate - 1){
-                printf(",");
+                printf(",");//make sure the values printed are comma separated until the end
             }
         }
         // if a powerball number is requested, generate and print it.
