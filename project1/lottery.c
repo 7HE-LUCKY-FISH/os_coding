@@ -15,7 +15,7 @@ int main(int argc, char *argv[]) {
     int i;                      // Loop counter.
 
 
-//settings flag to check for each parameter and prints out a specific error message if one is missing
+    //settings flag to check for each parameter and prints out a specific error message if one is missing
     bool flag_n = false;
     bool flag_r = false;
     bool flag_N = false;
