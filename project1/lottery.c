@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
+#include <stdbool.h>
 void print_usage(const char *progName) {
     fprintf(stderr, "Usage: %s -n NumbersToGenerate -r MaxNumber [-p MaxPowerBallNumber] -N NumberSetsToGenerate\n", progName);
 }
@@ -15,10 +15,15 @@ int main(int argc, char *argv[]) {
     int i;                      // Loop counter.
 
 
+//settings flag to check for each parameter and prints out a specific error message if one is missing
+    bool flag_n = false;
+    bool flag_r = false;
+    bool flag_N = false;
     //if there is no N input still generate 1 set
     // Parse command line arguments. And return 1 if there is an error.
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-n") == 0) {
+            flag_n = true;
             if (i + 1 < argc)
                 numbersToGenerate = atoi(argv[++i]);
             else {
@@ -27,6 +32,7 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
         } else if (strcmp(argv[i], "-r") == 0) {
+            flag_r = true;
             if (i + 1 < argc)
                 maxNumber = atoi(argv[++i]);
             else {
@@ -43,6 +49,7 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
         } else if (strcmp(argv[i], "-N") == 0) {
+            flag_N = true;
             if (i + 1 < argc)
                 numberSets = atoi(argv[++i]);
             else {
@@ -57,14 +64,30 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Validate required parameters. So there is no numbers below 0 such as -2 max number 
+    // check for missing required parameters individually
+    if (!flag_n) {
+        fprintf(stderr, "Error: Missing required parameter -n.\n");
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (!flag_r) {
+        fprintf(stderr, "Error: Missing required parameter -r.\n");
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (!flag_N) {
+        fprintf(stderr, "Error: Missing required parameter -N.\n");
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    // additional validation if values are negative or zero
     if (numbersToGenerate <= 0 || maxNumber <= 0 || numberSets <= 0) {
         fprintf(stderr, "Error: Missing or invalid required parameters such as negative values.\n");
         print_usage(argv[0]);
         return 1;
     }
 
-    // it makes no sense to generate more unique numbers than available.
     if (numbersToGenerate > maxNumber) {
         fprintf(stderr, "Error: NumbersToGenerate (%d) cannot be greater than MaxNumber (%d).\n", numbersToGenerate, maxNumber);
         return 1;
