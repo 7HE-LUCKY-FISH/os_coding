@@ -103,12 +103,20 @@ int main(int argc, char *argv[]) {
     printf("Sending SIGCONT to all zombies\n");
     for (int i = 0; i < num_zombies; i++) {
         //printf("SIGCONT: zombie %d, PID %d\n", i + 1, zombie_pids[i]);
-        kill(zombie_pids[i], SIGCONT);
+        if (kill(zombie_pids[i], SIGCONT)<0){
+            perror("kill");
+            free(zombie_pids);
+            exit(EXIT_FAILURE);
+        }
     }
     
     //send SIGCONT to self to trigger the cleanup handler
     printf("self cleanup PID: %d\n", getpid());
-    kill(getpid(), SIGCONT);
+    if(kill(getpid(), SIGCONT)<0){
+        perror("kill");
+        free(zombie_pids);
+        exit(EXIT_FAILURE);
+    }
     
     //wait for cleanup to complete
     while (!cleanup_complete) {
