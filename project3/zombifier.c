@@ -13,7 +13,7 @@ int cleanup_complete = 0;
 
 //SIGCONT handler
 void handle_sigcont(int sig) {
-
+ 
     //clean up zombie processes
     for (int i = 0; i < num_zombies; i++) {
         int status;
@@ -27,11 +27,6 @@ void handle_sigcont(int sig) {
 
     cleanup_complete = 1;
 }
-
-void handle_pause(int sig){
-
-}
-
 
 int main(int argc, char *argv[]) {
     int opt;
@@ -91,18 +86,9 @@ int main(int argc, char *argv[]) {
     
     printf("%d zombies create\n", num_zombies);
 
-    if(signal(SIGALRM, handle_pause) == SIG_ERR){
-        perror("signal");
-        free(zombie_pids);
-        exit(EXIT_FAILURE);
-    }
-    alarm(2);
-    pause();  
-
     //send SIGCONT to all zombies and then clean them up
     printf("Sending SIGCONT to all zombies\n");
     for (int i = 0; i < num_zombies; i++) {
-        //printf("SIGCONT: zombie %d, PID %d\n", i + 1, zombie_pids[i]);
         if (kill(zombie_pids[i], SIGCONT)<0){
             perror("kill");
             free(zombie_pids);
@@ -120,7 +106,7 @@ int main(int argc, char *argv[]) {
     
     //wait for cleanup to complete
     while (!cleanup_complete) {
-        sleep(1);
+        pause();
     }
     
     return 0;
