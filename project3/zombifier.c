@@ -5,6 +5,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <getopt.h>
+#include <errno.h>
+#include <string.h>
 
 //global variables
 int num_zombies = 0;
@@ -55,13 +57,13 @@ int main(int argc, char *argv[]) {
     //allocate memory
     zombie_pids = (pid_t *)malloc(num_zombies * sizeof(pid_t));
     if (zombie_pids == NULL) {
-        perror("malloc");
+        fprintf(stderr, "malloc failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     
     //attach signal handler
     if (signal(SIGCONT, handle_sigcont) == SIG_ERR) {
-        perror("signal");
+        fprintf(stderr, "signal handler error: %s\n", strerror(errno));
         free(zombie_pids);
         exit(EXIT_FAILURE);
     }
@@ -73,7 +75,7 @@ int main(int argc, char *argv[]) {
         pid_t pid = fork();
         
         if (pid < 0) {
-            perror("fork");
+            fprintf(stderr, "fork failed: %s\n", strerror(errno));
             free(zombie_pids);
             exit(EXIT_FAILURE);
         } else if (pid == 0) {
