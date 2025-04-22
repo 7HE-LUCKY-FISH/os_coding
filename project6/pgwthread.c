@@ -99,7 +99,10 @@ int main() {
     pthread_t thread1, thread2;
     int rc;
     // Set up signal handler using basic signal() function
-    signal(SIGINT, handle_sigint);
+    if (signal(SIGINT, handle_sigint) == SIG_ERR) {
+        fprintf(stderr, "Cannot set signal handler\n");
+        return EXIT_FAILURE;
+    }
     
     // Create threads
     rc = pthread_create(&thread1, NULL, thread1_func, NULL);
@@ -113,13 +116,31 @@ int main() {
         exit(EXIT_FAILURE);
     }
     // Wait for threads to complete (which will happen when SIGINT is received)
-    pthread_join(thread1, NULL);
-    pthread_join(thread2, NULL);
+    rc = pthread_join(thread1, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "Error joining thread 1: %d\n", rc);
+        return EXIT_FAILURE;
+    }
+    
+    rc = pthread_join(thread2, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "Error joining thread 2: %d\n", rc);
+        return EXIT_FAILURE;
+    }
     
     // Clean up resources
-    pthread_mutex_destroy(&mutex);
-    pthread_cond_destroy(&cond1);
-    pthread_cond_destroy(&cond2);
+    if ((rc = pthread_mutex_destroy(&mutex)) != 0) {
+        fprintf(stderr, "Error destroying mutex: %d\n", rc);
+        return EXIT_FAILURE;
+    }
     
+    if ((rc = pthread_cond_destroy(&cond1)) != 0) {
+        fprintf(stderr, "Error destroying condition variable: %d\n", rc);
+        return EXIT_FAILURE;
+    }
+    if ((rc = pthread_cond_destroy(&cond2)) != 0) {
+        fprintf(stderr, "Error destroying condition variable: %d\n", rc);
+        return EXIT_FAILURE;
+    }
     return 0;
 }
