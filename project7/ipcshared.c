@@ -247,6 +247,7 @@ int main(int argc, char *argv[]) {
     char *message = NULL;
     int is_producer = 0;
     int use_unix_socket = 0;
+    int is_comm =0;
     
     // Fixed getopt string - removed colon after u
     while ((opt = getopt(argc, argv, "pcm:q:use")) != -1) {
@@ -265,9 +266,11 @@ int main(int argc, char *argv[]) {
                 break;
             case 'u':
                 use_unix_socket = 1;
+                is_comm = 1;
                 break;
             case 's':
                 use_unix_socket = 0;
+                is_comm = 1;
                 break;
             case 'e':
                 is_echo = 1;
@@ -280,6 +283,15 @@ int main(int argc, char *argv[]) {
     
     if (!message) {
         fprintf(stderr, "no message provided.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if(!is_comm){
+        fprintf(stderr, "no communication method provided.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (queue_size <= 0) {
+        fprintf(stderr, "queue size must be greater than 0.\n");
         exit(EXIT_FAILURE);
     }
 
