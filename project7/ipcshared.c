@@ -13,7 +13,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 2048
 #define SOCKET_PATH "/tmp/producer_consumer_socket"
 #define SHM_NAME "/producer_consumer_shm"
 
@@ -43,7 +43,7 @@ int is_echo = 0;
 typedef struct {
     int in;
     int out;
-    char data[BUFFER_SIZE*10];
+    char data[];
 } shared_buffer;
 
 shared_buffer *shm_buffer;
@@ -168,16 +168,21 @@ void handle_shared_memory(int is_producer, char *message) {
         perror("shm_open error");
         exit(EXIT_FAILURE);
     }
-    
+    /*
     // Set size of shared memory object
     if (ftruncate(shm_fd, sizeof(shared_buffer)) == -1) {
         perror("ftruncate error");
         exit(EXIT_FAILURE);
     }
+    */
+    size_t shm_size = sizeof(shared_buffer)  + (BUFFER_SIZE * queue_size);
+    if (ftruncate(shm_fd, shm_size) == -1) {
+        perror("ftruncate error");
+        exit(EXIT_FAILURE);
+    }
     
     // Map shared memory object into memory
-    shm_buffer = mmap(NULL, sizeof(shared_buffer), PROT_READ | PROT_WRITE, 
-                   MAP_SHARED, shm_fd, 0);
+    shm_buffer = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (shm_buffer == MAP_FAILED) {
         perror("mmap error");
         exit(EXIT_FAILURE);
@@ -229,7 +234,7 @@ void handle_shared_memory(int is_producer, char *message) {
     }
     
     // Clean up
-    munmap(shm_buffer, sizeof(shared_buffer));
+    munmap(shm_buffer, shm_size);
     close(shm_fd);
     
     if (is_producer) {
