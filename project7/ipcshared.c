@@ -12,7 +12,8 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <getopt.h>
-
+#include <sys/select.h>  
+#include <sys/time.h> 
 
 
 //constant definitions
@@ -112,13 +113,17 @@ void consumer_socket(bool e, int q)
     int prod_fd, con_fd;
     struct sockaddr_un addr;
     char buffer[BUFFER_SIZE];
-    //socket creation
+    int messages_received = 0;
+    struct timeval timeout;
+    fd_set readfds;
+    
+    // socket creation
     if((prod_fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
     {
         perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
-    //set socket address
+    // set socket address
     memset(&addr, 0, sizeof(struct sockaddr_un));
     addr.sun_family = AF_UNIX;
 
@@ -142,9 +147,42 @@ void consumer_socket(bool e, int q)
     
     printf("Consumer started. Waiting for messages...\n");
     
-    // Run indefinitely until terminated by user
+    // Run until timeout indicates no more producers
+    int consecutive_timeouts = 0;
     while(1)
     {
+        // Set up for select call
+        FD_ZERO(&readfds);
+        FD_SET(prod_fd, &readfds);
+        
+        // Set timeout to 3 seconds
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+        
+        int activity = select(prod_fd + 1, &readfds, NULL, NULL, &timeout);
+        
+        if (activity < 0) {
+            perror("Select error");
+            break;
+        }
+        else if (activity == 0) {
+            // Timeout occurred, no connection request
+            consecutive_timeouts++;
+            
+            // If we've waited for multiple timeouts and already received some messages,
+            // assume all producers are done
+            if (consecutive_timeouts >= 2 && messages_received > 0) {
+                printf("No new connections for %d seconds. Assuming all producers finished.\n", 
+                       consecutive_timeouts * 3);
+                break;
+            }
+            continue;
+        }
+        
+        // Reset timeout counter if we get activity
+        consecutive_timeouts = 0;
+        
+        // Now it's safe to accept
         con_fd = accept(prod_fd, NULL, NULL);
         if(con_fd == -1)
         {
@@ -152,13 +190,15 @@ void consumer_socket(bool e, int q)
             close(prod_fd);
             exit(EXIT_FAILURE);
         }
+        
         memset(buffer, 0, BUFFER_SIZE);
     
-        if(read(con_fd, buffer, BUFFER_SIZE - 1) > 0 )
+        if(read(con_fd, buffer, BUFFER_SIZE - 1) > 0)
         {
+            messages_received++;
             if(e)
             {
-                printf("Consumer received: %s\n", buffer);
+                printf("Consumer received: %s (message %d)\n", buffer, messages_received);
             }
         }
         else
@@ -169,7 +209,7 @@ void consumer_socket(bool e, int q)
         close(con_fd);
     }
 
-    // This code will never be reached unless we add a signal handler
+    printf("All messages consumed (%d total). Exiting.\n", messages_received);
     close(prod_fd);
     unlink(SOCKET_NAME);
 }
@@ -184,24 +224,53 @@ void create_sharedmem(int q)
         perror("shm_open failed");
         exit(EXIT_FAILURE);
     }
-    //total_size is adjusted based on queue size
-    size_t total_size = sizeof(queue_t) + (q * BUFFER_SIZE);
-
-    if(ftruncate(shm_fd, total_size) == -1)
-    {
-        perror("ftruncate failed");
+    
+    // First, get the existing shared memory size if it exists
+    struct stat shm_stat;
+    if (fstat(shm_fd, &shm_stat) == -1) {
+        perror("fstat failed");
         exit(EXIT_FAILURE);
     }
+    
+    int existing_q = 0;
+    size_t needed_size = sizeof(queue_t) + (q * BUFFER_SIZE);
+    size_t existing_size = shm_stat.st_size;
+    
+    // If shared memory already exists, determine its queue size
+    if (existing_size > sizeof(queue_t)) {
+        queue_t *temp = mmap(NULL, sizeof(queue_t), PROT_READ, MAP_SHARED, shm_fd, 0);
+        if (temp == MAP_FAILED) {
+            perror("mmap failed during size check");
+            exit(EXIT_FAILURE);
+        }
+        existing_q = temp->q_size;
+        munmap(temp, sizeof(queue_t));
+        
+        // Update needed size to use the larger of the two queue sizes
+        int max_q = (existing_q > q) ? existing_q : q;
+        needed_size = sizeof(queue_t) + (max_q * BUFFER_SIZE);
+    }
+    
+    // Resize shared memory to accommodate the larger queue if needed
+    if (needed_size > existing_size) {
+        if (ftruncate(shm_fd, needed_size) == -1) {
+            perror("ftruncate failed");
+            exit(EXIT_FAILURE);
+        }
+    }
 
-    q_t = mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    // Map the shared memory
+    q_t = mmap(NULL, needed_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (q_t == MAP_FAILED) 
     {
         perror("mmap failed");
         exit(EXIT_FAILURE);
     }
+    
     sem_wait(mutex);
     if(q_t->running == 0)
     {
+        // Initialize for first time
         q_t->head = 0;
         q_t->tail = 0;
         q_t->q_size = q;
@@ -212,14 +281,21 @@ void create_sharedmem(int q)
         {
             memset(&q_t->messages[i * BUFFER_SIZE], 0, BUFFER_SIZE);
         }
-
     }
-    else if (q != q_t->q_size) 
+    else if (q > q_t->q_size) 
     {
-        fprintf(stderr, "Mismatch: Shared memory already initialized with q_size = %d, but received q = %d\n", q_t->q_size, q);
-        sem_post(mutex);
-        exit(EXIT_FAILURE);
+        // Expand the queue size if needed
+        printf("Expanding queue from %d to %d\n", q_t->q_size, q);
+        
+        // Initialize new message slots
+        for (int i = q_t->q_size; i < q; i++) 
+        {
+            memset(&q_t->messages[i * BUFFER_SIZE], 0, BUFFER_SIZE);
+        }
+        
+        q_t->q_size = q;
     }
+    
     q_t->count++;
     sem_post(mutex);
 }
@@ -298,11 +374,12 @@ void cleanup()
         sem_wait(mutex);
         q_t->count--;
         int should_clean = (q_t->count == 0);
+        int q_size = q_t->q_size;  // Save q_size before unmapping
         sem_post(mutex);
 
         if (should_clean) {
             printf("Cleaning up shared memory resources...\n");
-            size_t total_size = sizeof(queue_t) + (q_t->q_size * BUFFER_SIZE);
+            size_t total_size = sizeof(queue_t) + (q_size * BUFFER_SIZE);
             munmap(q_t, total_size);
             shm_unlink(SHM_NAME);
             
@@ -310,6 +387,10 @@ void cleanup()
             sem_unlink(SEM_FULL);
             sem_unlink(SEM_EMPTY);
             sem_unlink(SEM_MUTEX);
+        } else {
+            // Just unmap our view of the shared memory
+            size_t total_size = sizeof(queue_t) + (q_size * BUFFER_SIZE);
+            munmap(q_t, total_size);
         }
         
         // Close the semaphores in any case
