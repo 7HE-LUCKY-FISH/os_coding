@@ -1,334 +1,471 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <pthread.h>
 #include <semaphore.h>
+#include <string.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/mman.h>
-#include <fcntl.h>
 #include <errno.h>
 #include <getopt.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-
-#define BUFFER_SIZE 2048
-#define SOCKET_PATH "/tmp/producer_consumer_socket"
-#define SHM_NAME "/producer_consumer_shm"
 
 
-/*
-rm -f /dev/shm/sem.producer_consumer_mutex
-rm -f /dev/shm/sem.producer_consumer_full
-rm -f /dev/shm/sem.producer_consumer_empty
 
-current running 
-./ipcshared -p -m "hello world" -q 5 -u -e
-./ipcshared -c -m "hello world" -q 5 -u -e
+//constant definitions
+#define SOCKET_NAME "/tmp/pc.sock"
+#define BUFFER_SIZE 1024
+#define SHM_NAME "/pc_shm"
+#define SEM_FULL "/sem_full"
+#define SEM_EMPTY "/sem_empty"
+#define SEM_MUTEX "/sem_mutex"
 
+sem_t *full;
+sem_t *empty;
+sem_t *mutex;
 
-./ipcshared -p -m "hello world" -q 5 -s -e
-./ipcshared -c -m "hello world" -q 5 -s -e
+//queue struct to store messages and manage producer-consumer shared memory
+typedef struct
+{
+    int head;
+    int tail;
+    int q_size;
+    int count;
+    int running;
+    char messages[BUFFER_SIZE];
+}queue_t;
 
-
-*/
-
-
-sem_t *full, *empty, *mutex;
-char *buffer;
-int queue_size = 10;
-int is_echo = 0;
-
-typedef struct {
-    int in;
-    int out;
-    char data[];
-} shared_buffer;
-
-shared_buffer *shm_buffer;
+queue_t *q_t;
 
 
-void cleanup_semaphores() {
-    sem_unlink("/producer_consumer_mutex");
-    sem_unlink("/producer_consumer_full");
-    sem_unlink("/producer_consumer_empty");
-}
+void producer_socket(bool e, const char *m, int q);
+void consumer_socket(bool e, int q);
+void producer_shared(const char *m, int q, bool e);
+void consumer_shared(int q, bool e);
+void cleanup();
+void create_sharedmem(int q);
 
 
-void handle_unix_socket(int is_producer, char *message) {
-    struct sockaddr_un addr;
-    int sock_fd;
-    
-    // Create socket
-    if ((sock_fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
-        perror("socket error");
-        exit(EXIT_FAILURE);
-    }
-    
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
-    
-    if (is_producer) {
-        // Producer code
-        // Remove socket if it already exists
-        unlink(SOCKET_PATH);
-        
-        // Bind socket to address
-        if (bind(sock_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-            perror("bind error");
-            close(sock_fd);
-            exit(EXIT_FAILURE);
-        }
-        
-        // Listen for connections
-        if (listen(sock_fd, 1) == -1) {
-            perror("listen error");
-            close(sock_fd);
-            exit(EXIT_FAILURE);
-        }
-        
-        printf("Producer waiting for consumer connection...\n");
-        int client_fd;
-        if ((client_fd = accept(sock_fd, NULL, NULL)) == -1) {
-            perror("accept error");
-            close(sock_fd);
-            exit(EXIT_FAILURE);
-        }
-        
-        // Send message queue_size times
-        for (int i = 0; i < queue_size; i++) {
-            sem_wait(empty);
-            sem_wait(mutex);
-            
-            // Send message
-            if (send(client_fd, message, strlen(message) + 1, 0) == -1) {
-                perror("send error");
-                close(client_fd);
-                close(sock_fd);
-                exit(EXIT_FAILURE);
-            }
-            
-            if (is_echo) {
-                printf("Produced: %s\n", message);
-            }
-            
-            sem_post(mutex);
-            sem_post(full);
-            sleep(1); // Slow down for demonstration purposes
-        }
-        
-        close(client_fd);
-    } else {
-        // Consumer code
-        // Connect to socket
-        if (connect(sock_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-            perror("connect error");
-            close(sock_fd);
-            exit(EXIT_FAILURE);
-        }
-        
-        // Receive messages
-        char buffer[BUFFER_SIZE];
-        for (int i = 0; i < queue_size; i++) {
-            sem_wait(full);
-            sem_wait(mutex);
-            
-            // Receive message
-            int bytes_received = recv(sock_fd, buffer, BUFFER_SIZE - 1, 0);
-            if (bytes_received <= 0) {
-                if (bytes_received < 0) {
-                    perror("recv error");
-                }
-                break;
-            }
-            
-            buffer[bytes_received] = '\0';
-            if (is_echo) {
-                printf("Consumed: %s\n", buffer);
-            }
-            
-            sem_post(mutex);
-            sem_post(empty);
-        }
-    }
-    
-    close(sock_fd);
-    if (is_producer) {
-        unlink(SOCKET_PATH);
-    }
-}
-
-void handle_shared_memory(int is_producer, char *message) {
-    int shm_fd;
-    
-    // Create/open shared memory
-    if ((shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666)) == -1) {
-        perror("shm_open error");
-        exit(EXIT_FAILURE);
-    }
-    /*
-    // Set size of shared memory object
-    if (ftruncate(shm_fd, sizeof(shared_buffer)) == -1) {
-        perror("ftruncate error");
-        exit(EXIT_FAILURE);
-    }
-    */
-    size_t shm_size = sizeof(shared_buffer)  + (BUFFER_SIZE * queue_size);
-    if (ftruncate(shm_fd, shm_size) == -1) {
-        perror("ftruncate error");
-        exit(EXIT_FAILURE);
-    }
-    
-    // Map shared memory object into memory
-    shm_buffer = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (shm_buffer == MAP_FAILED) {
-        perror("mmap error");
-        exit(EXIT_FAILURE);
-    }
-    
-    if (is_producer) {
-        // Initialize buffer pointers
-        shm_buffer->in = 0;
-        shm_buffer->out = 0;
-        
-        // Produce messages
-        for (int i = 0; i < queue_size; i++) {
-            sem_wait(empty);
-            sem_wait(mutex);
-            
-            // Add message to buffer
-            strncpy(&shm_buffer->data[shm_buffer->in * BUFFER_SIZE], 
-                    message, BUFFER_SIZE - 1);
-            shm_buffer->in = (shm_buffer->in + 1) % queue_size;
-            
-            if (is_echo) {
-                printf("Produced: %s\n", message);
-            }
-            
-            sem_post(mutex);
-            sem_post(full);
-            sleep(1); // Slow down for demonstration purposes
-        }
-    } else {
-        // Consumer code
-        for (int i = 0; i < queue_size; i++) {
-            sem_wait(full);
-            sem_wait(mutex);
-            
-            // Consume message from buffer
-            char consumed_msg[BUFFER_SIZE];
-            strncpy(consumed_msg, &shm_buffer->data[shm_buffer->out * BUFFER_SIZE], 
-                   BUFFER_SIZE - 1);
-            consumed_msg[BUFFER_SIZE - 1] = '\0';
-            shm_buffer->out = (shm_buffer->out + 1) % queue_size;
-            
-            if (is_echo) {
-                printf("Consumed: %s\n", consumed_msg);
-            }
-            
-            sem_post(mutex);
-            sem_post(empty);
-        }
-    }
-    
-    // Clean up
-    munmap(shm_buffer, shm_size);
-    close(shm_fd);
-    
-    if (is_producer) {
-        shm_unlink(SHM_NAME);
-    }
-}
-
-int main(int argc, char *argv[]) {
-    int opt;
-    char *message = NULL;
-    int is_producer = 0;
-    int use_unix_socket = 0;
-    int is_comm =0;
-    
-    // Fixed getopt string - removed colon after u
-    while ((opt = getopt(argc, argv, "pcm:q:use")) != -1) {
-        switch (opt) {
+int main(int argc, char *argv[])
+{
+    //flags to keep track of cli arguments 
+    bool is_prod = false;
+    bool is_con = false;
+    bool msg_passed = false;
+    bool queue_arg = false;
+    bool u_arg = false;
+    bool s_arg = false;
+    bool e_arg = false;
+    char c;
+    int q_depth = 0;
+    char msg[BUFFER_SIZE] = {0};
+    //parse cli arguments with error handling 
+    while((c =getopt(argc, argv, "pcm:q:use")) != -1)
+    {
+        switch(c)
+        {
             case 'p':
-                is_producer = 1;
+                if(is_prod)
+                {
+                  fprintf(stderr, "Error: Multiple -p Arguements Passed");
+                  exit(EXIT_FAILURE);
+                }
+                is_prod = true;
                 break;
+
             case 'c':
-                is_producer = 0;
+                if(is_con)
+                {
+                  fprintf(stderr, "Error: Multiple -c Arguements Passed");
+                  exit(EXIT_FAILURE);
+                }
+                is_con = true;
                 break;
-            case 'm':
-                message = optarg;
-                break;
+
             case 'q':
-                queue_size = atoi(optarg);
+                if(queue_arg)
+                {
+                  fprintf(stderr, "Error: Multiple Arguments Passed");
+                  exit(EXIT_FAILURE);
+                }
+                queue_arg = true;
+                q_depth = atoi(optarg);
                 break;
+
             case 'u':
-                use_unix_socket = 1;
-                is_comm = 1;
+                if(u_arg)
+                {
+                    fprintf(stderr, "Error: Multiple -u Arguments Passed\n");
+                    exit(EXIT_FAILURE);
+                }
+                u_arg = true;
                 break;
             case 's':
-                use_unix_socket = 0;
-                is_comm = 1;
+                if(s_arg)
+                {
+                    fprintf(stderr, "Error: Multiple -s Arguments Passed\n");
+                    exit(EXIT_FAILURE);
+                }
+                s_arg = true;
+
                 break;
             case 'e':
-                is_echo = 1;
+                if(e_arg)
+                {
+                    fprintf(stderr, "Error: Multiple -e Arguments Passed \n");
+                    exit(EXIT_FAILURE);
+                }
+                e_arg = true;
+                break;
+            
+            case 'm':
+                if(msg_passed)
+                {
+                  fprintf(stderr, "Error: Multiple -m  Arguements Passed");
+                  exit(EXIT_FAILURE);
+                }
+                msg_passed = true;
+
+                strncpy(msg, optarg, BUFFER_SIZE - 1);
                 break;
             default:
-                fprintf(stderr, "usage: %s [-p | -c] [-m message] [-q size] [-u | -s] [-e]\n", argv[0]);
-                exit(EXIT_FAILURE);
+                fprintf(stderr, "Usage: %s -p/-c -q <depth> -u/-s -e -m <message>\n ", argv[0]);
+
         }
     }
-    
-    if (!message) {
-        fprintf(stderr, "no message provided.\n");
-        exit(EXIT_FAILURE);
+    //create semaphores
+    full = sem_open(SEM_FULL, O_CREAT, 0666, 0);
+    empty = sem_open(SEM_EMPTY, O_CREAT, 0666, q_depth); 
+    mutex = sem_open(SEM_MUTEX, O_CREAT, 0666, 1);
+
+
+    if (empty == SEM_FAILED && errno == EEXIST) 
+    {
+        empty = sem_open("/my_semaphore", 0); // Open existing
     }
 
-    if(!is_comm){
-        fprintf(stderr, "no communication method provided.\n");
-        exit(EXIT_FAILURE);
-    }
-    if (queue_size <= 0) {
-        fprintf(stderr, "queue size must be greater than 0.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    if(is_producer){
-        cleanup_semaphores();
-    }
-
-    
-    // Create named semaphores for sharing between processes
-    mutex = sem_open("/producer_consumer_mutex", O_CREAT, 0666, 1);
-    full = sem_open("/producer_consumer_full", O_CREAT, 0666, 0);
-    empty = sem_open("/producer_consumer_empty", O_CREAT, 0666, queue_size);
-    
-    if (mutex == SEM_FAILED || full == SEM_FAILED || empty == SEM_FAILED) {
+    if (mutex == SEM_FAILED || full == SEM_FAILED || empty == SEM_FAILED) 
+    {
         perror("sem_open failed");
         exit(EXIT_FAILURE);
     }
-    
-    if (use_unix_socket) {
-        handle_unix_socket(is_producer, message);
-    } else {
-        handle_shared_memory(is_producer, message);
+
+    //error handling for aguments passed
+    if ((is_prod && is_con) || (!is_prod && !is_con) )
+    {
+        fprintf(stderr, "Error: Please enter either -p or -c\n");
+        exit(EXIT_FAILURE);
+    }
+    if ((u_arg && s_arg) || (!u_arg && !s_arg))
+    {
+        fprintf(stderr, "Error: Please enter either -u or -s\n");
+        exit(EXIT_FAILURE);
+    }
+    //producer for unix socket
+    if(is_prod && u_arg)
+    {
+        if(!msg_passed)
+        {
+            fprintf(stderr, "Error: -p requires -m \n");
+            exit(EXIT_FAILURE);
+        }
+        producer_socket(e_arg, msg, q_depth);
+        cleanup();
+
+    }
+    //consumer for unix socket
+    if(is_con && u_arg)
+    {
+        consumer_socket(e_arg,q_depth);
+    }
+    //shared memory creation
+    if(s_arg)
+    {
+        create_sharedmem(q_depth);
+    }
+
+    //producer for shared memory
+    if(is_prod && s_arg)
+    {
+        if(!msg_passed)
+        {
+            fprintf(stderr, "Error: -p requires -m\n ");
+            exit(EXIT_FAILURE);
+        }
+        create_sharedmem(q_depth);
+        producer_shared(msg, q_depth, e_arg);
+        
+        // Only close the semaphores but don't unlink them
+        sem_close(full);
+        sem_close(empty);
+        sem_close(mutex);
+        
+        printf("Producer finished. Start consumer to process the data.\n");
+        return 0; // Exit without calling cleanup()
     }
     
-    // Close and clean up semaphores
-    sem_close(mutex);
-    sem_close(full);
-    sem_close(empty);
-    
-    if (is_producer) {
-        sleep(1);
-        // Producer cleans up semaphores
-        sem_unlink("/producer_consumer_mutex");
-        sem_unlink("/producer_consumer_full");
-        sem_unlink("/producer_consumer_empty");
-        cleanup_semaphores();
+    //consumer for shared memory
+    if(is_con && s_arg)
+    {
+        create_sharedmem(q_depth);
+        consumer_shared(q_depth, e_arg);
+        cleanup(); // Only consumer does full cleanup
+    }
+    // Only call cleanup here for unix socket mode
+    else if (u_arg) {
+        cleanup();
     }
     
     return 0;
 }
+
+//producer function for unix sockets
+void producer_socket(bool e, const char *m, int q)
+{
+    //UNIX domain socket 
+    struct sockaddr_un addr;
+    //queue size 
+    for(int i = 0; i < q; i++)
+    {
+        int prod_fd;
+        //set socket address
+        memset(&addr, 0, sizeof(struct sockaddr_un));
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, SOCKET_NAME, sizeof(addr.sun_path) - 1);
+        char buffer[BUFFER_SIZE];
+        //socket creation
+        //loop for connection attempt if producer is ran first to retry connection until consumer
+        while (1) 
+        {
+            prod_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (prod_fd < 0) 
+            {
+                perror("Producer: socket failed");
+                exit(EXIT_FAILURE);
+            }
+
+            //connect to consumer
+            if(connect(prod_fd, (const struct sockaddr *) &addr, sizeof(struct sockaddr_un)) == -1)
+            {
+                perror("Connect failed, waiting for consumer");
+                //sleep(1) so while its waiting to connect to consumer, it doesn't spam the terminal
+                sleep(1);
+                close(prod_fd);
+            }
+            //if connected, break out of retry loop
+            else
+            {
+                break;
+            }
+        }
+
+        //send message
+        if(write(prod_fd, m, strlen(m)) < 0)
+        {
+            perror("Write failed");
+            close(prod_fd);
+            exit(EXIT_FAILURE);
+        }
+        //if e argument is passed by user
+        if(e)
+        {
+            printf("Message from Producer: %s\n", m);
+        }
+        close(prod_fd);
+  }
+}
+
+//consumer function for unix sockets
+void consumer_socket(bool e, int q)
+{
+    int prod_fd, con_fd;
+    struct sockaddr_un addr;
+    char buffer[BUFFER_SIZE];
+    //socket creation
+    if((prod_fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
+    {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+    //set socket address
+    memset(&addr, 0, sizeof(struct sockaddr_un));
+    addr.sun_family = AF_UNIX;
+
+    strncpy(addr.sun_path, SOCKET_NAME, sizeof(addr.sun_path) - 1);
+    
+    unlink(SOCKET_NAME);
+
+    if(bind(prod_fd, (struct sockaddr *)&addr, sizeof(struct sockaddr_un)))
+    {
+        perror("Bind failed");
+        close(prod_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    if(listen(prod_fd, 5) == -1)
+    {
+        perror("Listen failed");
+        close(prod_fd);
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < q; i++)
+    {
+        con_fd = accept(prod_fd, NULL, NULL);
+        if(con_fd == -1)
+        {
+            perror("Accept failed");
+            close(prod_fd);
+            exit(EXIT_FAILURE);
+        }
+        memset(buffer, 0, BUFFER_SIZE);
+    
+        if(read(con_fd, buffer, BUFFER_SIZE - 1) > 0 )
+        {
+            if(e)
+            {
+                printf("Consumer received: %s\n", buffer);
+            }
+            else
+            {
+                perror("Read failed");
+            }
+        }
+    }
+
+    close(con_fd);
+    close(prod_fd);
+    unlink(SOCKET_NAME);
+}
+
+
+//function to create section of shared memory
+void create_sharedmem(int q)
+{
+    int shm_fd = shm_open(SHM_NAME, O_CREAT| O_RDWR, 0666);
+    if (shm_fd == -1) 
+    {
+        perror("shm_open failed");
+        exit(EXIT_FAILURE);
+    }
+    //total_size is adjusted based on queue size
+    size_t total_size = sizeof(queue_t) + (q * BUFFER_SIZE);
+
+    if(ftruncate(shm_fd, total_size) == -1)
+    {
+        perror("ftruncate failed");
+        exit(EXIT_FAILURE);
+    }
+
+    q_t = mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (q_t == MAP_FAILED) 
+    {
+        perror("mmap failed");
+        exit(EXIT_FAILURE);
+    }
+    sem_wait(mutex);
+    if(q_t->running == 0)
+    {
+        q_t->head = 0;
+        q_t->tail = 0;
+        q_t->q_size = q;
+        q_t->count = 0;
+        q_t->running = 1;
+        for (int i = 0; i < q; i++) 
+        {
+            memset(&q_t->messages[i * BUFFER_SIZE], 0, BUFFER_SIZE);
+        }
+
+    }
+    else if (q != q_t->q_size) 
+    {
+        fprintf(stderr, "Mismatch: Shared memory already initialized with q_size = %d, but received q = %d\n", q_t->q_size, q);
+        sem_post(mutex);
+        exit(EXIT_FAILURE);
+    }
+    q_t->count++;
+    sem_post(mutex);
+}
+
+//function for producer in shared memory, iterates through queue size and produces messages 
+void producer_shared(const char *m, int q, bool e)
+{
+    for(int i = 0; i < q; i++)
+    {
+        sem_wait(empty);
+        sem_wait(mutex);
+
+        strncpy(&q_t->messages[q_t->head * BUFFER_SIZE], m, BUFFER_SIZE - 1);
+        q_t->messages[q_t->head * BUFFER_SIZE + BUFFER_SIZE - 1] = '\0';
+        q_t->head = (q_t->head +1) % q_t->q_size;
+        if (e) 
+        {
+            printf("Message from Producer: %s\n", m);
+        }
+        sem_post(mutex);
+        sem_post(full);
+
+    }
+}
+
+//function for consumer in shared memory, iterarates through queue size and consumes messages in shared memory
+void consumer_shared(int q, bool e)
+{
+    for(int i = 0; i < q; i++)
+    {
+        sem_wait(full);
+        sem_wait(mutex);
+        char m[BUFFER_SIZE];
+
+        strncpy(m, &q_t->messages[q_t->tail * BUFFER_SIZE], BUFFER_SIZE - 1);
+
+        m[BUFFER_SIZE - 1] = '\0';
+        q_t->tail = (q_t->tail + 1) % q_t->q_size;
+        if (e) 
+        {
+            printf("Consumer Received: %s\n", m);
+        }
+        sem_post(mutex);
+        sem_post(empty);
+    }
+}
+
+//function to cleanup semaphores after program runs 
+void cleanup()
+{
+    // Check if q_t is initialized (only happens in shared memory mode)
+    if (q_t != NULL) {
+        sem_wait(mutex);
+        q_t->count--;
+        int should_clean = (q_t->count == 0);
+        sem_post(mutex);
+
+        if (should_clean) {
+            printf("Cleaning up shared memory resources...\n");
+            size_t total_size = sizeof(queue_t) + (q_t->q_size * BUFFER_SIZE);
+            munmap(q_t, total_size);
+            shm_unlink(SHM_NAME);
+            
+            // Also unlink semaphores since we're the last process
+            sem_unlink(SEM_FULL);
+            sem_unlink(SEM_EMPTY);
+            sem_unlink(SEM_MUTEX);
+        }
+        
+        // Close the semaphores in any case
+        sem_close(full);
+        sem_close(empty);
+        sem_close(mutex);
+    } else {
+        // For unix socket mode, close and unlink semaphores
+        sem_close(full);
+        sem_close(empty);
+        sem_close(mutex);
+        sem_unlink(SEM_FULL);
+        sem_unlink(SEM_EMPTY);
+        sem_unlink(SEM_MUTEX);
+    }
+}
+
