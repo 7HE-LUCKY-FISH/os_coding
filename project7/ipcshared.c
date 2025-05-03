@@ -29,8 +29,7 @@ sem_t *empty;
 sem_t *mutex;
 
 //queue struct to store messages and manage producer-consumer shared memory
-typedef struct
-{
+typedef struct{
     int head;
     int tail;
     int q_size;
@@ -44,51 +43,43 @@ queue_t *q_t;
 
 
 //producer function for unix sockets
-void producer_socket(bool e, const char *m, int q)
-{
+void producer_socket(bool e, const char *m, int q){
     struct sockaddr_un addr;
-    for(int i = 0; i < q; i++)
-    {
+    for(int i = 0; i < q; i++){
         int producer_file;
         memset(&addr, 0, sizeof(struct sockaddr_un));
         addr.sun_family = AF_UNIX;
         strncpy(addr.sun_path, SOCKET_NAME, sizeof(addr.sun_path) - 1);
         char buffer[BUFFER_SIZE];
         //loop for connection attempt if producer is ran first to retry connection until consumer
-        while (1) 
-        {
+        while (1) {
             producer_file = socket(AF_UNIX, SOCK_STREAM, 0);
-            if (producer_file < 0) 
-            {
+            if (producer_file < 0) {
                 perror("Producer: socket failed");
                 exit(EXIT_FAILURE);
             }
 
             //connect to consumer
-            if(connect(producer_file, (const struct sockaddr *) &addr, sizeof(struct sockaddr_un)) == -1)
-            {
+            if(connect(producer_file, (const struct sockaddr *) &addr, sizeof(struct sockaddr_un)) == -1){
                 perror("Connect failed, waiting for consumer");
                 //sleep(1) so while its waiting to connect to consumer, it doesn't spam the terminal
                 sleep(1);
                 close(producer_file);
             }
             //if connected, break out of retry loop
-            else
-            {
+            else{
                 break;
             }
         }
 
         //send message
-        if(write(producer_file, m, strlen(m)) < 0)
-        {
+        if(write(producer_file, m, strlen(m)) < 0){
             perror("Write failed");
             close(producer_file);
             exit(EXIT_FAILURE);
         }
         //if e argument is passed by user
-        if(e)
-        {
+        if(e){
             printf("Message from Producer: %s\n", m);
         }
         close(producer_file);
@@ -96,8 +87,7 @@ void producer_socket(bool e, const char *m, int q)
 }
 
 //consumer function for unix sockets
-void consumer_socket(bool e, int q)
-{
+void consumer_socket(bool e, int q){
     int producer_file, con_fd;
     struct sockaddr_un addr;
     char buffer[BUFFER_SIZE];
@@ -106,8 +96,7 @@ void consumer_socket(bool e, int q)
     fd_set readfds;
     
     // socket creation
-    if((producer_file = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
-    {
+    if((producer_file = socket(AF_UNIX, SOCK_STREAM, 0)) < 0){
         perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
@@ -119,15 +108,13 @@ void consumer_socket(bool e, int q)
     
     unlink(SOCKET_NAME);
 
-    if(bind(producer_file, (struct sockaddr *)&addr, sizeof(struct sockaddr_un)))
-    {
+    if(bind(producer_file, (struct sockaddr *)&addr, sizeof(struct sockaddr_un))){
         perror("Bind failed");
         close(producer_file);
         exit(EXIT_FAILURE);
     }
 
-    if(listen(producer_file, 5) == -1)
-    {
+    if(listen(producer_file, 5) == -1){
         perror("Listen failed");
         close(producer_file);
         exit(EXIT_FAILURE);
@@ -137,8 +124,7 @@ void consumer_socket(bool e, int q)
     
     // Run until timeout indicates no more producers
     int consecutive_timeouts = 0;
-    while(1)
-    {
+    while(1){
         // Set up for select call
         FD_ZERO(&readfds);
         FD_SET(producer_file, &readfds);
@@ -172,8 +158,7 @@ void consumer_socket(bool e, int q)
         
         // Now it's safe to accept
         con_fd = accept(producer_file, NULL, NULL);
-        if(con_fd == -1)
-        {
+        if(con_fd == -1){
             perror("Accept failed");
             close(producer_file);
             exit(EXIT_FAILURE);
@@ -181,16 +166,14 @@ void consumer_socket(bool e, int q)
         
         memset(buffer, 0, BUFFER_SIZE);
     
-        if(read(con_fd, buffer, BUFFER_SIZE - 1) > 0)
-        {
+        if(read(con_fd, buffer, BUFFER_SIZE - 1) > 0){
             messages_received++;
             if(e)
             {
                 printf("Consumer received: %s (message %d)\n", buffer, messages_received);
             }
         }
-        else
-        {
+        else{
             perror("Read failed");
         }
         
@@ -204,11 +187,9 @@ void consumer_socket(bool e, int q)
 
 
 //function to create section of shared memory
-void create_sharedmem(int q)
-{
+void create_sharedmem(int q){
     int shm_fd = shm_open(SHM_NAME, O_CREAT| O_RDWR, 0666);
-    if (shm_fd == -1) 
-    {
+    if (shm_fd == -1) {
         perror("shm_open failed");
         exit(EXIT_FAILURE);
     }
@@ -248,8 +229,7 @@ void create_sharedmem(int q)
 
     // Map the shared memory
     q_t = mmap(NULL, needed_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (q_t == MAP_FAILED) 
-    {
+    if (q_t == MAP_FAILED) {
         perror("mmap failed");
         exit(EXIT_FAILURE);
     }
@@ -308,7 +288,7 @@ void producer_shared(const char *m, int q, bool e){
 
 //function for consumer in shared memory, continuously consumes messages
 void consumer_shared(int q, bool e){
-    printf("Consumer started. Waiting for messages...\n");
+    printf("Consumer started. Waiting for messages.\n");
     
     while(1){
         // Check if producer is done and queue is empty
@@ -357,7 +337,7 @@ void cleanup(){
         sem_post(mutex);
 
         if (should_clean) {
-            printf("Cleaning up shared memory resources...\n");
+            printf("Cleaning up shared memory resources.\n");
             size_t total_size = sizeof(queue_t) + (q_size * BUFFER_SIZE);
             munmap(q_t, total_size);
             shm_unlink(SHM_NAME);
@@ -468,11 +448,11 @@ int main(int argc, char *argv[]){
     
     //error handling for aguments passed
     if ((is_producer && is_consumer) || (!is_producer && !is_consumer) ){
-        fprintf(stderr, "Error: Please enter either -p or -c\n");
+        fprintf(stderr, "Error: Missing -p or -c\n");
         exit(EXIT_FAILURE);
     }
     if ((u_arg && s_arg) || (!u_arg && !s_arg)){
-        fprintf(stderr, "Error: Please enter either -u or -s\n");
+        fprintf(stderr, "Error: Missing -u or -s\n");
         exit(EXIT_FAILURE);
     }
     
